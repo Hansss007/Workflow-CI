@@ -1,0 +1,36 @@
+name: CI - Train MLflow Project
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Setup conda env from conda.yaml
+        uses: conda-incubator/setup-miniconda@v2
+        with:
+          python-version: 3.10
+          activate-environment: mlproj
+          environment-file: MLProject/conda.yaml
+          auto-activate-base: false
+
+      - name: Ensure mlflow CLI available (in env)
+        run: |
+          python -m pip install --upgrade pip
+          pip install mlflow
+
+      - name: Run MLflow Project (train)
+        working-directory: .
+        run: |
+          mlflow run MLProject -P csv_path=MLProject/namadataset_preprocessing.csv -P target_col="GRADE" -P task="auto"

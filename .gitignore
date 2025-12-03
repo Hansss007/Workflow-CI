@@ -1,0 +1,20 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+
+# MLflow local logs & artifacts
+mlruns/
+artifacts/
+.artifacts/
+
+# Jupyter / system files
+*.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+
+# Pickle model files generated locally
+*.pkl
+*.log

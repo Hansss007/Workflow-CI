@@ -1,0 +1,11 @@
+name: Project_Akhir_Rehan
+conda_env: conda.yaml
+
+entry_points:
+  main:
+    parameters:
+      csv_path: {type: str, default: "namadataset_preprocessing.csv"}
+      target_col: {type: str, default: "GRADE"}
+      task: {type: str, default: "auto"}
+    command: >
+      python modelling.py {csv_path} {target_col} {task}
