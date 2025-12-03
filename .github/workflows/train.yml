@@ -1,36 +1,33 @@
-name: CI - Train MLflow Project
+name: CI - Train Model (Basic)
 
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch: {}
+    branches: [ "main" ]
 
 jobs:
   train:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
-      - name: Setup conda env from conda.yaml
-        uses: conda-incubator/setup-miniconda@v2
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install mlflow scikit-learn pandas numpy joblib
+
+      - name: Run training script
+        run: |
+          python MLProject/modelling.py "MLProject/namadataset_preprocessing.csv" "GRADE"
+
+      - name: Upload model artifact
+        uses: actions/upload-artifact@v3
         with:
-          python-version: 3.10
-          activate-environment: mlproj
-          environment-file: MLProject/conda.yaml
-          auto-activate-base: false
-
-      - name: Ensure mlflow CLI available (in env)
-        run: |
-          python -m pip install --upgrade pip
-          pip install mlflow
-
-      - name: Run MLflow Project (train)
-        working-directory: .
-        run: |
-          mlflow run MLProject -P csv_path=MLProject/namadataset_preprocessing.csv -P target_col="GRADE" -P task="auto"
+          name: trained-model
+          path: MLProject/artifacts/
