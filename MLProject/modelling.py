@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-modelling.py (CI-friendly final)
-Supports:
- - positional args: python modelling.py <csv_path> <target_col> <task>
- - runs fine under `mlflow run MLProject` (params passed from MLproject)
- - logs artifacts into MLflow + also writes files to MLProject/artifacts/
- - explicitly logs MLflow Model (artifact_path="model") to create model/ in Artifacts UI
+modelling.py (CI-friendly final, robust start_run)
+
+Perubahan penting:
+- Gunakan MLFLOW_TRACKING_URI dari env (dengan fallback ke ./mlruns)
+- Saat menjalankan mlflow.start_run(): coba attach ke run_id dari env (MLFLOW_RUN_ID),
+  kalau gagal gunakan start_run() baru, dan kalau tetap gagal gunakan nested run.
+- Pastikan selalu memanggil mlflow.end_run() di finally supaya run tidak menggantung.
+- Simpan artifact di folder 'artifacts' relative ke working dir (MLProject/artifacts jika ada).
+- Tangani infer_signature/log_model dalam try/except agar CI tidak gagal jika signature bermasalah.
 """
 import os
 import sys
@@ -32,16 +35,26 @@ from mlflow.models.signature import infer_signature
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-# MLflow tracking config: prefer env var (used in CI), fallback to local mlruns/ file store
-MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", f"file:{Path.cwd() / 'mlruns'}")
-mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+# ---------- MLflow configuration ----------
+# Prefer environment variable MLFLOW_TRACKING_URI if set (CI will set it).
+# Fallback to sqlite file in current working directory (stable for local dev).
+env_tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
+if env_tracking_uri:
+    mlflow.set_tracking_uri(env_tracking_uri)
+    logger.info(f"Using MLFLOW_TRACKING_URI from env: {env_tracking_uri}")
+else:
+    # fallback file DB (relative to cwd)
+    fallback_db = Path.cwd() / "mlruns"
+    mlflow.set_tracking_uri(f"file:{fallback_db}")
+    logger.info(f"No MLFLOW_TRACKING_URI provided. Using fallback file store: file:{fallback_db}")
+
 EXPERIMENT_NAME = os.environ.get("MLFLOW_EXPERIMENT", "Project_Akhir_Rehan")
 mlflow.set_experiment(EXPERIMENT_NAME)
-# autolog helps capture params/metrics, but we will also explicitly log the model (for model/ folder)
+# enable autologging for sklearn (still do explicit model log to create model/ in UI)
 mlflow.sklearn.autolog()
-logger.info(f"MLflow set to {mlflow.get_tracking_uri()}, experiment={EXPERIMENT_NAME}, autolog enabled")
+logger.info(f"MLflow configured: tracking_uri={mlflow.get_tracking_uri()}, experiment={EXPERIMENT_NAME}")
 
-
+# ---------- helpers ----------
 def make_onehot_encoder():
     try:
         return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
@@ -50,7 +63,6 @@ def make_onehot_encoder():
             return OneHotEncoder(handle_unknown="ignore", sparse=False)
         except TypeError:
             return OneHotEncoder(handle_unknown="ignore")
-
 
 def choose_target_column(df: pd.DataFrame) -> str:
     n_rows = len(df)
@@ -69,7 +81,6 @@ def choose_target_column(df: pd.DataFrame) -> str:
     logger.warning(f"No safe target; fallback to last column: {fallback}")
     return fallback
 
-
 def safe_stratify_check(y: pd.Series) -> bool:
     vc = y.value_counts()
     if vc.empty:
@@ -78,10 +89,8 @@ def safe_stratify_check(y: pd.Series) -> bool:
     logger.info(f"Target counts (top): {vc.head().to_dict()}")
     return min_count >= 2
 
-
 def detect_task_auto(y_series: pd.Series) -> str:
     return "regression" if pd.api.types.is_numeric_dtype(y_series) else "classification"
-
 
 def write_estimator_html(path: Path, pipeline: Pipeline, X_train: pd.DataFrame):
     try:
@@ -110,7 +119,6 @@ def write_estimator_html(path: Path, pipeline: Pipeline, X_train: pd.DataFrame):
     path.write_text(html, encoding="utf-8")
     logger.info(f"Wrote estimator summary to {path}")
 
-
 def build_pipeline(num_cols, cat_cols, task="regression", random_state=42):
     transformers = []
     if num_cols:
@@ -124,7 +132,7 @@ def build_pipeline(num_cols, cat_cols, task="regression", random_state=42):
 
     return Pipeline([("preproc", preprocessor), ("model", model)])
 
-
+# ---------- main ----------
 def main(csv_path="namadataset_preprocessing.csv", target_col=None, task_mode="auto",
          test_size=0.2, random_state=42):
     csv_path = Path(csv_path)
@@ -135,6 +143,7 @@ def main(csv_path="namadataset_preprocessing.csv", target_col=None, task_mode="a
     df = pd.read_csv(csv_path)
     logger.info(f"Loaded dataset: {df.shape}")
 
+    # choose/validate target column
     if target_col is None or str(target_col).strip() == "":
         target_col = choose_target_column(df)
     else:
@@ -160,12 +169,45 @@ def main(csv_path="namadataset_preprocessing.csv", target_col=None, task_mode="a
 
     pipeline = build_pipeline(num_cols=num_cols, cat_cols=cat_cols, task=task, random_state=random_state)
 
-    # Ensure artifacts dir (relative to working dir). When executed by mlflow run MLProject,
-    # working dir will be MLProject folder, so artifacts -> MLProject/artifacts
+    # artifacts dir: prefer MLProject/artifacts if that folder exists in repo root of this run,
+    # otherwise use 'artifacts' in cwd.
+    # NOTE: when mlflow run MLProject executes, working dir will normally be MLProject folder.
     artifact_dir = Path("artifacts")
+    # if we're running from a parent repo folder and MLProject exists, keep artifacts inside MLProject
+    if Path("MLProject").exists():
+        artifact_dir = Path("MLProject") / "artifacts"
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    with mlflow.start_run():
+    # Robust MLflow run handling:
+    # - try to attach to parent run if MLFLOW_RUN_ID env is present
+    # - otherwise start a normal run
+    # - if start_run fails, fallback to nested run
+    run_started = False
+    try:
+        run_id_env = os.environ.get("MLFLOW_RUN_ID")
+        if run_id_env:
+            try:
+                mlflow.start_run(run_id=run_id_env)
+                logger.info(f"Attached to parent run id from env: {run_id_env}")
+                run_started = True
+            except Exception as e:
+                logger.warning(f"Failed to attach to run_id from env ({run_id_env}): {e}. Trying start_run()")
+        if not run_started:
+            try:
+                mlflow.start_run()
+                logger.info("Started a new MLflow run")
+                run_started = True
+            except Exception as e:
+                logger.warning(f"mlflow.start_run() failed: {e}. Trying nested run fallback.")
+                try:
+                    mlflow.start_run(nested=True)
+                    logger.info("Started nested MLflow run as fallback")
+                    run_started = True
+                except Exception as e2:
+                    logger.error(f"Failed to start any MLflow run: {e2}")
+                    raise
+
+        # ===== training & logging =====
         logger.info("Fitting pipeline...")
         pipeline.fit(X_train, y_train)
         logger.info("Predicting and logging metrics...")
@@ -186,9 +228,12 @@ def main(csv_path="namadataset_preprocessing.csv", target_col=None, task_mode="a
         # save pipeline and estimator summary locally (and log to mlflow artifacts)
         model_file = artifact_dir / "pipeline.pkl"
         joblib.dump(pipeline, model_file)
+        logger.info(f"Saved pipeline locally to {model_file}")
+
+        # Log artifacts to mlflow (artifact_path keys chosen to match MLflow UI)
         try:
             mlflow.log_artifact(str(model_file), artifact_path="pipeline_files")
-            logger.info(f"Saved pipeline to {model_file} and logged as pipeline_files")
+            logger.info("Logged pipeline.pkl to mlflow artifact_path='pipeline_files'")
         except Exception as e:
             logger.warning(f"mlflow.log_artifact pipeline_files failed: {e}")
 
@@ -197,26 +242,35 @@ def main(csv_path="namadataset_preprocessing.csv", target_col=None, task_mode="a
         try:
             write_estimator_html(estimator_file, pipeline, X_train)
             mlflow.log_artifact(str(estimator_file), artifact_path="artifact_files")
+            logger.info("Wrote and logged estimator.html")
         except Exception as e:
-            logger.warning(f"estimator.html logging failed: {e}")
+            logger.warning(f"estimator.html write/log failed: {e}")
 
-        # Explicit log_model to create model/ artifact folder
+        # Explicit log_model to create model/ artifact folder in UI (signature inference optional)
         try:
             signature = None
             try:
+                # quick attempt to infer signature; guard against failures
                 signature = infer_signature(X_train, pipeline.predict(X_train))
-            except Exception:
+            except Exception as sig_ex:
+                logger.warning(f"Signature inference failed (continuing without signature): {sig_ex}")
                 signature = None
             mlflow.sklearn.log_model(sk_model=pipeline, artifact_path="model", signature=signature)
             logger.info("mlflow.sklearn.log_model finished (artifact_path='model')")
         except Exception as e:
             logger.warning(f"mlflow.sklearn.log_model failed: {e}")
 
-    logger.info("Run finished. Inspect MLflow UI for details.")
+    finally:
+        # ensure run closed so DB state is consistent
+        try:
+            mlflow.end_run()
+            logger.info("Ended MLflow run (end_run called).")
+        except Exception as e:
+            logger.warning(f"mlflow.end_run() raised exception (ignored): {e}")
 
+    logger.info("Run finished. Inspect MLflow UI for details and artifacts.")
 
 if __name__ == "__main__":
-    # support both positional args (from MLproject) and explicit flags if desired
     import argparse
     parser = argparse.ArgumentParser(description="Train and log model with MLflow")
     parser.add_argument("csv_path", nargs="?", default="MLProject/namadataset_preprocessing.csv")

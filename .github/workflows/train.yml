@@ -2,7 +2,7 @@ name: CI - Train Model (MLflow Project)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
   train:
@@ -17,22 +17,23 @@ jobs:
       with:
         python-version: "3.10"
 
-    - name: Install dependencies
+    - name: Install MLflow
       run: |
         python -m pip install --upgrade pip
         pip install mlflow
+
+    - name: Install project dependencies
+      run: |
         pip install -r MLProject/requirements.txt
 
-    - name: Run MLflow Project
-      env:
-        MLFLOW_TRACKING_URI: sqlite:///mlflow.db
+    - name: Run MLflow Project (local backend, no conda)
+      working-directory: MLProject
       run: |
-        mlflow run MLProject \
+        mlflow run . \
           --env-manager=local \
           -P csv_path="namadataset_preprocessing.csv" \
           -P target_col="GRADE" \
           -P task="auto"
-
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
