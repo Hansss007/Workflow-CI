@@ -20,7 +20,9 @@ jobs:
     - name: Upgrade pip & install mlflow
       run: |
         python -m pip install --upgrade pip
-        pip install mlflow
+        pip install mlflow==3.6.0
+        mlflow --version
+
 
     - name: Install project dependencies
       run: |
