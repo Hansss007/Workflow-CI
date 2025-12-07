@@ -24,12 +24,15 @@ jobs:
         pip install -r MLProject/requirements.txt
 
     - name: Run MLflow Project
+      env:
+        MLFLOW_TRACKING_URI: sqlite:///mlflow.db
       run: |
         mlflow run MLProject \
           --env-manager=local \
           -P csv_path="namadataset_preprocessing.csv" \
           -P target_col="GRADE" \
           -P task="auto"
+
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
