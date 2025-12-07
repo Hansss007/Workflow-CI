@@ -1,4 +1,4 @@
-name: CI - Train Model (Basic)
+name: CI - Train Model (MLflow Project)
 
 on:
   push:
@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repo
+    - name: Checkout repository
       uses: actions/checkout@v3
 
     - name: Set up Python
@@ -17,14 +17,22 @@ jobs:
       with:
         python-version: "3.10"
 
-    - name: Install dependencies
+    - name: Upgrade pip & install mlflow
       run: |
         python -m pip install --upgrade pip
+        pip install mlflow
+
+    - name: Install project dependencies
+      run: |
         pip install -r MLProject/requirements.txt
 
-    - name: Run training script
+    - name: Run MLflow Project (no-conda)
       run: |
-        python MLProject/modelling.py "MLProject/namadataset_preprocessing.csv" "GRADE"
+        mlflow run MLProject --no-conda \
+          -P csv_path="namadataset_preprocessing.csv" \
+          -P target_col="GRADE" \
+          -P task="auto"
+
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
